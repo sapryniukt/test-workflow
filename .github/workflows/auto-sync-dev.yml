@@ -1,0 +1,126 @@
+name: Smart Dev Sync
+
+on:
+  push:
+    branches: [master]
+  schedule:
+    - cron: "0 */6 * * *" # Every 6 hours
+
+jobs:
+  sync-dev:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.SYNC_TOKEN }}
+
+      - name: Setup Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Check sync status
+        id: check
+        run: |
+          git fetch origin master dev
+
+          # Check if dev is behind
+          BEHIND=$(git rev-list --count origin/dev..origin/master)
+          AHEAD=$(git rev-list --count origin/master..origin/dev)
+
+          echo "behind_count=$BEHIND" >> $GITHUB_OUTPUT
+          echo "ahead_count=$AHEAD" >> $GITHUB_OUTPUT
+          echo "needs_sync=$([[ $BEHIND -gt 0 ]] && echo 'true' || echo 'false')" >> $GITHUB_OUTPUT
+
+      - name: Check for existing sync PR
+        if: steps.check.outputs.needs_sync == 'true'
+        id: existing-pr
+        run: |
+          # Check if there's already an open sync PR
+          EXISTING_PR=$(gh pr list --base dev --label "auto-sync" --state open --json number --jq '.[0].number // empty')
+          echo "existing_pr=$EXISTING_PR" >> $GITHUB_OUTPUT
+        env:
+          SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
+
+      - name: Create sync branch and PR
+        if: steps.check.outputs.needs_sync == 'true' && steps.existing-pr.outputs.existing_pr == ''
+        run: |
+          TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+          BRANCH="auto-sync/master-to-dev-$TIMESTAMP"
+
+          # Create and switch to sync branch
+          git checkout -b $BRANCH origin/dev
+
+          # Attempt merge
+          if git merge origin/master --no-edit; then
+            # Successful merge
+            git push origin $BRANCH
+            
+            # Create PR
+            gh pr create \
+              --title "🔄 Auto-sync: Master → Dev (${{ steps.check.outputs.behind_count }} commits)" \
+              --body "$(cat << EOF
+          ## Automatic Sync: Master → Dev
+
+          ### Summary
+          - **${{ steps.check.outputs.behind_count }}** commits behind master
+          - **${{ steps.check.outputs.ahead_count }}** commits ahead of master
+          - **No merge conflicts detected** ✅
+
+          ### Recent Master Commits
+          $(git log origin/dev..origin/master --oneline --max-count=10)
+
+          ### Actions
+          - [ ] Review changes
+          - [ ] Approve and merge
+
+          *Auto-generated on $(date)*
+          EOF
+          )" \
+              --base dev \
+              --head $BRANCH \
+              --label "auto-sync,maintenance" \
+              --assignee "@me"
+          else
+            # Merge conflicts detected
+            echo "❌ Merge conflicts detected. Manual intervention required."
+            
+            # Reset and create conflict notification
+            git merge --abort
+            git push origin $BRANCH
+            
+            gh pr create \
+              --title "⚠️ Manual Sync Required: Master → Dev (Conflicts)" \
+              --body "$(cat << EOF
+          ## Manual Sync Required
+
+          **Merge conflicts detected** when attempting to sync master into dev.
+
+          ### Summary
+          - **${{ steps.check.outputs.behind_count }}** commits behind master
+          - **Conflicts require manual resolution**
+
+          ### Next Steps
+          1. Checkout this branch locally
+          2. Resolve merge conflicts manually
+          3. Complete the merge process
+
+          \`\`\`bash
+          git checkout $BRANCH
+          git merge origin/master
+          # Resolve conflicts
+          git commit
+          git push origin $BRANCH
+          \`\`\`
+
+          *Auto-generated on $(date)*
+          EOF
+          )" \
+              --base dev \
+              --head $BRANCH \
+              --label "auto-sync,conflicts,needs-attention"
+          fi
+        env:
+          SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
