@@ -1,4 +1,4 @@
-name: Auto Sync Dev
+name: Smart Dev Sync
 
 on:
   push:
@@ -56,6 +56,9 @@ jobs:
       - name: Update existing sync PR
         if: steps.check.outputs.needs_sync == 'true' && steps.existing-pr.outputs.has_existing_pr == 'true'
         run: |
+          # Fetch latest changes
+          git fetch origin master dev
+
           PR_BRANCH="${{ steps.existing-pr.outputs.existing_pr_branch }}"
           PR_NUMBER="${{ steps.existing-pr.outputs.existing_pr_number }}"
 
@@ -122,13 +125,16 @@ jobs:
       - name: Create new sync PR
         if: steps.check.outputs.needs_sync == 'true' && steps.existing-pr.outputs.has_existing_pr == 'false'
         run: |
+          # Fetch latest changes to ensure we have the most recent commits
+          git fetch origin master dev
+
           TIMESTAMP=$(date +%Y%m%d-%H%M%S)
           BRANCH="auto-sync/master-to-dev-$TIMESTAMP"
 
-          # Create and switch to sync branch
+          # Create and switch to sync branch from latest dev
           git checkout -b $BRANCH origin/dev
 
-          # Attempt merge
+          # Attempt merge with latest master
           if git merge origin/master --no-edit; then
             # Successful merge
             git push origin $BRANCH
@@ -156,8 +162,7 @@ jobs:
           )" \
               --base dev \
               --head $BRANCH \
-              --label "auto-sync,maintenance" \
-              --assignee "@me"
+              --label "auto-sync,maintenance"
           else
             # Merge conflicts detected
             echo "❌ Merge conflicts detected. Manual intervention required."
