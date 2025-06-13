@@ -5,10 +5,12 @@ Automatically creates pull requests to sync the `master` branch into `dev` when 
 ## Features
 
 - 🔄 **Automatic Sync**: Creates PRs when `dev` is behind `master`
+- 🔄 **Smart Updates**: Updates existing sync PRs with new master commits instead of creating duplicates
 - ⏰ **Scheduled Checks**: Runs every 6 hours to check for updates
 - 🚫 **Duplicate Prevention**: Skips creation if sync PR already exists
 - ⚠️ **Conflict Detection**: Creates special PRs when merge conflicts occur
 - 📝 **Detailed Information**: Includes commit summaries and sync statistics
+- 💬 **Auto Comments**: Notifies when PRs are updated with new changes
 
 ## Setup Instructions
 
@@ -19,8 +21,18 @@ Automatically creates pull requests to sync the `master` branch into `dev` when 
 3. Configure the token:
 
 - **Note**: `Auto-sync workflow token`
-- **Expiration**: Choose appropriate duration
-- **Scopes**: Select only `repo` (full repository access)
+- **Expiration**: Choose appropriate duration (recommended: 90 days or 1 year)
+- **Scopes**: Select the following permissions:
+
+#### Required Token Permissions
+
+| Scope          | Permission                                      | Description                                           |
+| -------------- | ----------------------------------------------- | ----------------------------------------------------- |
+| **`repo`**     | Full control of private repositories            | Access to repository content, PRs, and branches       |
+| **`workflow`** | Update GitHub Action workflows                  | Allows workflow to interact with GitHub Actions       |
+| **`read:org`** | Read org and team membership, read org projects | Required for user assignment and organization context |
+
+⚠️ **Important**: All three scopes are required for full functionality. Without `read:org`, auto-assignment features will fail.
 
 4. Click **"Generate token"**
 5. **Copy the token** (you won't see it again!)
