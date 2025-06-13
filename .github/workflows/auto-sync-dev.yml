@@ -125,84 +125,56 @@ jobs:
 
           echo "🔄 Updating existing sync PR #$PR_NUMBER on branch $PR_BRANCH (triggered by ${{ steps.check.outputs.triggered_by }} update)"
 
+          # Fetch latest changes from ALL branches first
+          git fetch origin master dev $PR_BRANCH
+
           # Checkout existing sync branch
-          git fetch origin $PR_BRANCH
           git checkout $PR_BRANCH
 
-          # Pull latest changes from BOTH branches
-          git fetch origin master dev
+      - name: Update existing sync PR (master or dev updates)
+        if: steps.check.outputs.needs_sync == 'true' && steps.existing-pr.outputs.has_existing_pr == 'true'
+        run: |
+          PR_BRANCH="${{ steps.existing-pr.outputs.existing_pr_branch }}"
+          PR_NUMBER="${{ steps.existing-pr.outputs.existing_pr_number }}"
 
-          # First, update with latest dev changes (merge)
+          echo "🔄 Updating existing sync PR #$PR_NUMBER on branch $PR_BRANCH (triggered by ${{ steps.check.outputs.triggered_by }} update)"
+
+          # Fetch latest changes from ALL branches first
+          git fetch origin master dev $PR_BRANCH
+
+          # Checkout existing sync branch
+          git checkout $PR_BRANCH
+
+          # Try to update with latest dev changes first
           echo "📥 Merging latest dev changes..."
           if git merge origin/dev --no-edit; then
             echo "✅ Successfully merged latest dev changes"
+            DEV_MERGE_SUCCESS=true
           else
-            echo "❌ Failed to merge dev changes - conflicts detected"
-            # Handle dev merge conflicts
-            CONFLICTED_FILES=$(git diff --name-only --diff-filter=U || echo "unknown")
-            
-            # Clean up and create notification
+            echo "❌ Dev merge conflicts detected - will need manual resolution"
+            DEV_MERGE_SUCCESS=false
+            DEV_CONFLICTED_FILES=$(git diff --name-only --diff-filter=U || echo "unknown")
+            # Clean up failed merge but continue
             git merge --abort 2>/dev/null || true
-            
-            gh pr edit $PR_NUMBER \
-              --title "⚠️ Sync PR Needs Manual Update: Dev Conflicts Detected" \
-              --remove-label "maintenance" \
-              --add-label "auto-sync,conflicts,needs-attention" \
-              --body "$(cat << EOF
-          ## Manual Sync Required - Dev Merge Conflicts Detected
-
-          **Failed to update sync PR** with latest dev changes due to conflicts.
-
-          ### Summary
-          - **${{ steps.check.outputs.behind_count }}** commits behind master
-          - **${{ steps.check.outputs.ahead_count }}** commits ahead of master
-          - **Dev merge conflicts detected** ❌
-
-          ### Dev Conflicted Files
-          \`\`\`
-          $CONFLICTED_FILES
-          \`\`\`
-
-          ### Manual Resolution Steps
-          1. Checkout this branch locally
-          2. Merge latest dev changes and resolve conflicts
-          3. Then merge master changes
-          4. Push the resolved merges
-
-          \`\`\`bash
-          git fetch origin
-          git checkout $PR_BRANCH
-          git merge origin/dev
-          # Resolve dev conflicts in your editor
-          git add .
-          git commit -m "Resolve dev merge conflicts"
-          git merge origin/master
-          # Resolve any master conflicts if needed
-          git add .
-          git commit -m "Resolve master merge conflicts"
-          git push origin $PR_BRANCH
-          \`\`\`
-
-          ### After Resolution
-          - [ ] Dev conflicts resolved
-          - [ ] Master conflicts resolved (if any)
-          - [ ] Changes reviewed and tested
-          - [ ] Ready to merge
-
-          *Auto-updated on $(date)*
-          EOF
-          )"
-            
-            gh pr comment $PR_NUMBER --body "⚠️ **Failed to update sync PR** with latest dev changes due to merge conflicts. Manual resolution required."
-            exit 0
           fi
 
-          # Then merge master changes
+          # Try to update with latest master changes
           echo "📥 Merging latest master changes..."
           if git merge origin/master --no-edit; then
             echo "✅ Successfully merged latest master changes"
-            
-            # Push updated branch
+            MASTER_MERGE_SUCCESS=true
+          else
+            echo "❌ Master merge conflicts detected - will need manual resolution"
+            MASTER_MERGE_SUCCESS=false
+            MASTER_CONFLICTED_FILES=$(git diff --name-only --diff-filter=U || echo "unknown")
+            # Clean up failed merge but continue
+            git merge --abort 2>/dev/null || true
+          fi
+
+          # Determine the update strategy based on merge results
+          if [[ "$DEV_MERGE_SUCCESS" == "true" && "$MASTER_MERGE_SUCCESS" == "true" ]]; then
+            # Both merges successful - push updated branch
+            echo "🎉 Both dev and master merged successfully"
             git push origin $PR_BRANCH
             
             # Update PR with successful merge - REMOVE conflict labels
@@ -218,6 +190,7 @@ jobs:
           - **${{ steps.check.outputs.ahead_count }}** commits ahead of master  
           - **No merge conflicts detected** ✅
           - **PR updated with latest dev AND master changes** 🔄
+          - **Triggered by**: ${{ steps.check.outputs.triggered_by }} update
 
           ### Recent Master Commits
           $(git log origin/dev..origin/master --oneline --max-count=10)
@@ -230,18 +203,69 @@ jobs:
           EOF
           )"
 
-            # Add comment about the update
             gh pr comment $PR_NUMBER --body "🔄 **PR automatically updated** with latest dev and master changes (triggered by ${{ steps.check.outputs.triggered_by }} update). ✅ **No conflicts detected** - Ready for review!"
             
-          else
-            echo "❌ Failed to merge master changes - conflicts detected"
-            # Handle master merge conflicts
-            CONFLICTED_FILES=$(git diff --name-only --diff-filter=U || echo "unknown")
+          elif [[ "$DEV_MERGE_SUCCESS" == "false" && "$MASTER_MERGE_SUCCESS" == "true" ]]; then
+            # Dev conflicts, master OK - this is unusual but possible
+            echo "⚠️ Dev merge failed, master merge would succeed"
             
-            # Clean up
-            git merge --abort 2>/dev/null || true
+            gh pr edit $PR_NUMBER \
+              --title "⚠️ Sync PR Needs Manual Update: Dev Conflicts Detected" \
+              --remove-label "maintenance" \
+              --add-label "auto-sync,conflicts,needs-attention" \
+              --body "$(cat << EOF
+          ## Manual Sync Required - Dev Merge Conflicts Detected [UPDATED]
+
+          **Failed to update sync PR** with latest dev changes due to conflicts. Master changes can be merged cleanly.
+
+          ### Summary
+          - **${{ steps.check.outputs.behind_count }}** commits behind master
+          - **${{ steps.check.outputs.ahead_count }}** commits ahead of master
+          - **Dev merge conflicts detected** ❌
+          - **Master merge would succeed** ✅
+          - **Triggered by**: ${{ steps.check.outputs.triggered_by }} update
+
+          ### Dev Conflicted Files
+          \`\`\`
+          $DEV_CONFLICTED_FILES
+          \`\`\`
+
+          ### Manual Resolution Steps
+          1. Checkout this branch locally
+          2. Merge latest dev changes and resolve conflicts
+          3. Then merge master changes (should be clean)
+          4. Push the resolved merges
+
+          \`\`\`bash
+          git fetch origin
+          git checkout $PR_BRANCH
+          git merge origin/dev
+          # Resolve dev conflicts in your editor
+          git add .
+          git commit -m "Resolve dev merge conflicts"
+          git merge origin/master
+          git push origin $PR_BRANCH
+          \`\`\`
+
+          ### After Resolution
+          - [ ] Dev conflicts resolved
+          - [ ] Master changes merged
+          - [ ] Changes reviewed and tested
+          - [ ] Ready to merge
+
+          *Auto-updated on $(date)*
+          EOF
+          )"
             
-            # Update PR to indicate master conflicts
+            gh pr comment $PR_NUMBER --body "⚠️ **Latest dev changes have conflicts** with the sync branch. Master changes can be merged cleanly. Manual resolution required for dev conflicts."
+            
+          elif [[ "$DEV_MERGE_SUCCESS" == "true" && "$MASTER_MERGE_SUCCESS" == "false" ]]; then
+            # Dev OK, master conflicts - this is the common case
+            echo "⚠️ Dev merge succeeded, master merge failed"
+            
+            # Push the dev changes at least
+            git push origin $PR_BRANCH
+            
             gh pr edit $PR_NUMBER \
               --title "⚠️ Sync PR Needs Manual Update: Master → Dev (Conflicts)" \
               --remove-label "maintenance" \
@@ -256,17 +280,18 @@ jobs:
           - **${{ steps.check.outputs.ahead_count }}** commits ahead of master
           - **Latest dev changes merged** ✅
           - **Master merge conflicts detected** ❌
+          - **Triggered by**: ${{ steps.check.outputs.triggered_by }} update
 
           ### Master Conflicted Files
           \`\`\`
-          $CONFLICTED_FILES
+          $MASTER_CONFLICTED_FILES
           \`\`\`
 
           ### Recent Master Commits (causing conflicts)
           $(git log origin/dev..origin/master --oneline --max-count=10)
 
           ### Manual Resolution Steps
-          1. Checkout this branch locally
+          1. Checkout this branch locally (dev changes already included)
           2. Merge master and resolve conflicts
           3. Push the resolved merge
 
@@ -289,7 +314,74 @@ jobs:
           EOF
           )"
             
-            gh pr comment $PR_NUMBER --body "⚠️ **Master merge conflicts detected** while updating sync PR. Dev changes were merged successfully, but master merge requires manual resolution."
+            gh pr comment $PR_NUMBER --body "✅ **Latest dev changes merged successfully**. ⚠️ **Master merge conflicts detected** - manual resolution required for master changes only."
+            
+          else
+            # Both merges failed - conflicts everywhere
+            echo "❌ Both dev and master merges failed"
+            
+            gh pr edit $PR_NUMBER \
+              --title "⚠️ Manual Sync Required: Multiple Conflicts Detected" \
+              --remove-label "maintenance" \
+              --add-label "auto-sync,conflicts,needs-attention" \
+              --body "$(cat << EOF
+          ## Manual Sync Required - Multiple Merge Conflicts [UPDATED]
+
+          **Both dev and master changes have conflicts** with the sync branch. Full manual resolution required.
+
+          ### Summary
+          - **${{ steps.check.outputs.behind_count }}** commits behind master
+          - **${{ steps.check.outputs.ahead_count }}** commits ahead of master
+          - **Dev merge conflicts detected** ❌
+          - **Master merge conflicts detected** ❌
+          - **Triggered by**: ${{ steps.check.outputs.triggered_by }} update
+
+          ### Dev Conflicted Files
+          \`\`\`
+          $DEV_CONFLICTED_FILES
+          \`\`\`
+
+          ### Master Conflicted Files  
+          \`\`\`
+          $MASTER_CONFLICTED_FILES
+          \`\`\`
+
+          ### Manual Resolution Steps
+          1. Checkout this branch locally
+          2. Merge dev changes first and resolve conflicts
+          3. Then merge master changes and resolve conflicts
+          4. Push the resolved merges
+
+          \`\`\`bash
+          git fetch origin
+          git checkout $PR_BRANCH
+
+          # Resolve dev conflicts first
+          git merge origin/dev
+          # Resolve dev conflicts in your editor
+          git add .
+          git commit -m "Resolve dev merge conflicts"
+
+          # Then resolve master conflicts
+          git merge origin/master
+          # Resolve master conflicts in your editor
+          git add .
+          git commit -m "Resolve master merge conflicts"
+
+          git push origin $PR_BRANCH
+          \`\`\`
+
+          ### After Resolution
+          - [ ] Dev conflicts resolved
+          - [ ] Master conflicts resolved
+          - [ ] Changes reviewed and tested
+          - [ ] Ready to merge
+
+          *Auto-updated on $(date)*
+          EOF
+          )"
+            
+            gh pr comment $PR_NUMBER --body "⚠️ **Multiple conflicts detected** - both dev and master changes have conflicts with the sync branch. Comprehensive manual resolution required."
           fi
         env:
           GH_TOKEN: ${{ secrets.SYNC_TOKEN }}
