@@ -1,4 +1,4 @@
-name: Smart Dev Sync
+name: Auto Sync Dev
 
 on:
   push:
@@ -33,6 +33,44 @@ jobs:
           echo "behind_count=$BEHIND" >> $GITHUB_OUTPUT
           echo "ahead_count=$AHEAD" >> $GITHUB_OUTPUT
           echo "needs_sync=$([[ $BEHIND -gt 0 ]] && echo 'true' || echo 'false')" >> $GITHUB_OUTPUT
+
+      - name: Test merge compatibility
+        if: steps.check.outputs.needs_sync == 'true'
+        id: test-merge
+        run: |
+          git fetch origin master dev
+
+          # Create temporary branch for testing
+          git checkout -b temp-test-merge origin/dev
+
+          # Test merge without committing
+          if git merge --no-commit --no-ff origin/master; then
+            echo "merge_possible=true" >> $GITHUB_OUTPUT
+            echo "✅ Merge test successful - no conflicts detected"
+            
+            # Get conflicted files (should be empty)
+            CONFLICTED_FILES=$(git diff --name-only --diff-filter=U || echo "")
+            echo "conflicted_files=" >> $GITHUB_OUTPUT
+            
+            # Clean up test merge
+            git merge --abort 2>/dev/null || true
+          else
+            echo "merge_possible=false" >> $GITHUB_OUTPUT
+            echo "❌ Merge test failed - conflicts detected"
+            
+            # Get conflicted files
+            CONFLICTED_FILES=$(git diff --name-only --diff-filter=U || echo "unknown")
+            echo "conflicted_files<<EOF" >> $GITHUB_OUTPUT
+            echo "$CONFLICTED_FILES" >> $GITHUB_OUTPUT
+            echo "EOF" >> $GITHUB_OUTPUT
+            
+            # Clean up test merge
+            git merge --abort 2>/dev/null || true
+          fi
+
+          # Clean up temp branch
+          git checkout master
+          git branch -D temp-test-merge
 
       - name: Check for existing sync PR
         if: steps.check.outputs.needs_sync == 'true'
@@ -74,9 +112,10 @@ jobs:
           if [[ $CURRENT_BEHIND -gt 0 ]]; then
             echo "📦 Found $CURRENT_BEHIND new commits to sync"
             
-            # Attempt to merge new changes
-            if git merge origin/master --no-edit; then
+            # Check if merge is possible based on our test
+            if [[ "${{ steps.test-merge.outputs.merge_possible }}" == "true" ]]; then
               # Successful merge - update the branch
+              git merge origin/master --no-edit
               git push origin $PR_BRANCH
               
               # Update PR description
@@ -106,14 +145,35 @@ jobs:
               gh pr comment $PR_NUMBER --body "🔄 **PR automatically updated** with $CURRENT_BEHIND new commits from master. Ready for review!"
               
             else
-              # Merge conflicts - add comment and update labels
-              git merge --abort
-              
+              # Merge conflicts detected - update PR with conflict info
               gh pr edit $PR_NUMBER \
-                --title "⚠️ Sync PR Needs Update: Master → Dev (Conflicts)" \
+                --title "⚠️ Sync PR Needs Manual Update: Master → Dev (Conflicts)" \
                 --add-label "conflicts,needs-attention"
               
-              gh pr comment $PR_NUMBER --body "⚠️ **Merge conflicts detected** while updating this PR. Manual resolution required. See the latest commits in master that caused conflicts."
+              gh pr comment $PR_NUMBER --body "$(cat << EOF
+          ⚠️ **Merge conflicts detected** while updating this PR with new master commits.
+
+          ### Conflicted Files
+          \`\`\`
+          ${{ steps.test-merge.outputs.conflicted_files }}
+          \`\`\`
+
+          ### Manual Update Required
+          1. Checkout this branch locally
+          2. Merge master and resolve conflicts  
+          3. Push the resolved changes
+
+          \`\`\`bash
+          git fetch origin
+          git checkout $PR_BRANCH
+          git merge origin/master
+          # Resolve conflicts in your editor
+          git add .
+          git commit
+          git push origin $PR_BRANCH
+          \`\`\`
+          EOF
+          )"
             fi
           else
             echo "✅ Existing PR is already up to date"
@@ -122,27 +182,28 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.SYNC_TOKEN }}
 
-      - name: Create new sync PR
-        if: steps.check.outputs.needs_sync == 'true' && steps.existing-pr.outputs.has_existing_pr == 'false'
+      - name: Create new successful sync PR
+        if: steps.check.outputs.needs_sync == 'true' && steps.existing-pr.outputs.has_existing_pr == 'false' && steps.test-merge.outputs.merge_possible == 'true'
         run: |
-          # Fetch latest changes to ensure we have the most recent commits
+          # Fetch latest changes
           git fetch origin master dev
 
           TIMESTAMP=$(date +%Y%m%d-%H%M%S)
           BRANCH="auto-sync/master-to-dev-$TIMESTAMP"
 
-          # Create and switch to sync branch from latest dev
+          # Create sync branch from latest dev
           git checkout -b $BRANCH origin/dev
 
-          # Attempt merge with latest master
-          if git merge origin/master --no-edit; then
-            # Successful merge
-            git push origin $BRANCH
-            
-            # Create PR
-            gh pr create \
-              --title "🔄 Auto-sync: Master → Dev (${{ steps.check.outputs.behind_count }} commits)" \
-              --body "$(cat << EOF
+          # Merge master (we know this will succeed from our test)
+          git merge origin/master --no-edit
+
+          # Push the merged branch
+          git push origin $BRANCH
+
+          # Create successful sync PR
+          gh pr create \
+            --title "🔄 Auto-sync: Master → Dev (${{ steps.check.outputs.behind_count }} commits)" \
+            --body "$(cat << EOF
           ## Automatic Sync: Master → Dev
 
           ### Summary
@@ -160,47 +221,70 @@ jobs:
           *Auto-generated on $(date)*
           EOF
           )" \
-              --base dev \
-              --head $BRANCH \
-              --label "auto-sync,maintenance"
-          else
-            # Merge conflicts detected
-            echo "❌ Merge conflicts detected. Manual intervention required."
-            
-            # Reset and create conflict notification
-            git merge --abort
-            git push origin $BRANCH
-            
-            gh pr create \
-              --title "⚠️ Manual Sync Required: Master → Dev (Conflicts)" \
-              --body "$(cat << EOF
-          ## Manual Sync Required
+            --base dev \
+            --head $BRANCH \
+            --label "auto-sync,maintenance"
+        env:
+          GH_TOKEN: ${{ secrets.SYNC_TOKEN }}
 
-          **Merge conflicts detected** when attempting to sync master into dev.
+      - name: Create conflict notification PR
+        if: steps.check.outputs.needs_sync == 'true' && steps.existing-pr.outputs.has_existing_pr == 'false' && steps.test-merge.outputs.merge_possible == 'false'
+        run: |
+          # Fetch latest changes
+          git fetch origin master dev
+
+          TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+          BRANCH="sync-conflict/master-to-dev-$TIMESTAMP"
+
+          # Create branch from dev (clean, no conflicts)
+          git checkout -b $BRANCH origin/dev
+          git push origin $BRANCH
+
+          # Create conflict notification PR
+          gh pr create \
+            --title "⚠️ Manual Sync Required: Master → Dev (Conflicts Detected)" \
+            --body "$(cat << EOF
+          ## Manual Sync Required - Merge Conflicts Detected
+
+          **Automatic merge failed** during compatibility test. Manual resolution required.
 
           ### Summary
           - **${{ steps.check.outputs.behind_count }}** commits behind master
-          - **Conflicts require manual resolution**
+          - **Merge conflicts detected in files below**
 
-          ### Next Steps
+          ### Conflicted Files
+          \`\`\`
+          ${{ steps.test-merge.outputs.conflicted_files }}
+          \`\`\`
+
+          ### Recent Master Commits (causing conflicts)
+          $(git log origin/dev..origin/master --oneline --max-count=10)
+
+          ### Manual Resolution Steps
           1. Checkout this branch locally
-          2. Resolve merge conflicts manually
-          3. Complete the merge process
+          2. Merge master and resolve conflicts
+          3. Push the resolved merge
 
           \`\`\`bash
+          git fetch origin
           git checkout $BRANCH
           git merge origin/master
-          # Resolve conflicts
-          git commit
+          # Resolve conflicts in your editor
+          git add .
+          git commit -m "Resolve merge conflicts for master → dev sync"
           git push origin $BRANCH
           \`\`\`
+
+          ### After Resolution
+          - [ ] Conflicts resolved and tested
+          - [ ] Changes reviewed  
+          - [ ] Ready to merge
 
           *Auto-generated on $(date)*
           EOF
           )" \
-              --base dev \
-              --head $BRANCH \
-              --label "auto-sync,conflicts,needs-attention"
-          fi
+            --base dev \
+            --head $BRANCH \
+            --label "auto-sync,conflicts,needs-attention"
         env:
           GH_TOKEN: ${{ secrets.SYNC_TOKEN }}
