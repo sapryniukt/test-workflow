@@ -39,13 +39,88 @@ jobs:
         id: existing-pr
         run: |
           # Check if there's already an open sync PR
-          EXISTING_PR=$(gh pr list --base dev --label "auto-sync" --state open --json number --jq '.[0].number // empty')
-          echo "existing_pr=$EXISTING_PR" >> $GITHUB_OUTPUT
+          EXISTING_PR=$(gh pr list --base dev --label "auto-sync" --state open --json number,headRefName --jq '.[0] // empty')
+
+          if [[ -n "$EXISTING_PR" ]]; then
+            PR_NUMBER=$(echo "$EXISTING_PR" | jq -r '.number')
+            PR_BRANCH=$(echo "$EXISTING_PR" | jq -r '.headRefName')
+            echo "existing_pr_number=$PR_NUMBER" >> $GITHUB_OUTPUT
+            echo "existing_pr_branch=$PR_BRANCH" >> $GITHUB_OUTPUT
+            echo "has_existing_pr=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_existing_pr=false" >> $GITHUB_OUTPUT
+          fi
         env:
           GH_TOKEN: ${{ secrets.SYNC_TOKEN }}
 
-      - name: Create sync branch and PR
-        if: steps.check.outputs.needs_sync == 'true' && steps.existing-pr.outputs.existing_pr == ''
+      - name: Update existing sync PR
+        if: steps.check.outputs.needs_sync == 'true' && steps.existing-pr.outputs.has_existing_pr == 'true'
+        run: |
+          PR_BRANCH="${{ steps.existing-pr.outputs.existing_pr_branch }}"
+          PR_NUMBER="${{ steps.existing-pr.outputs.existing_pr_number }}"
+
+          echo "🔄 Updating existing sync PR #$PR_NUMBER on branch $PR_BRANCH"
+
+          # Checkout existing sync branch
+          git fetch origin $PR_BRANCH
+          git checkout $PR_BRANCH
+
+          # Check if there are new commits to sync
+          CURRENT_BEHIND=$(git rev-list --count HEAD..origin/master)
+
+          if [[ $CURRENT_BEHIND -gt 0 ]]; then
+            echo "📦 Found $CURRENT_BEHIND new commits to sync"
+            
+            # Attempt to merge new changes
+            if git merge origin/master --no-edit; then
+              # Successful merge - update the branch
+              git push origin $PR_BRANCH
+              
+              # Update PR description
+              gh pr edit $PR_NUMBER \
+                --title "🔄 Auto-sync: Master → Dev (${{ steps.check.outputs.behind_count }} commits) [Updated]" \
+                --body "$(cat << EOF
+          ## Automatic Sync: Master → Dev [UPDATED]
+
+          ### Summary
+          - **${{ steps.check.outputs.behind_count }}** commits behind master
+          - **${{ steps.check.outputs.ahead_count }}** commits ahead of master  
+          - **No merge conflicts detected** ✅
+          - **PR updated with latest changes** 🔄
+
+          ### Recent Master Commits
+          $(git log origin/dev..origin/master --oneline --max-count=10)
+
+          ### Actions
+          - [ ] Review changes
+          - [ ] Approve and merge
+
+          *Auto-updated on $(date)*
+          EOF
+          )"
+
+              # Add comment about the update
+              gh pr comment $PR_NUMBER --body "🔄 **PR automatically updated** with $CURRENT_BEHIND new commits from master. Ready for review!"
+              
+            else
+              # Merge conflicts - add comment and update labels
+              git merge --abort
+              
+              gh pr edit $PR_NUMBER \
+                --title "⚠️ Sync PR Needs Update: Master → Dev (Conflicts)" \
+                --add-label "conflicts,needs-attention"
+              
+              gh pr comment $PR_NUMBER --body "⚠️ **Merge conflicts detected** while updating this PR. Manual resolution required. See the latest commits in master that caused conflicts."
+            fi
+          else
+            echo "✅ Existing PR is already up to date"
+            gh pr comment $PR_NUMBER --body "✅ PR is up to date with latest master changes."
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.SYNC_TOKEN }}
+
+      - name: Create new sync PR
+        if: steps.check.outputs.needs_sync == 'true' && steps.existing-pr.outputs.has_existing_pr == 'false'
         run: |
           TIMESTAMP=$(date +%Y%m%d-%H%M%S)
           BRANCH="auto-sync/master-to-dev-$TIMESTAMP"
