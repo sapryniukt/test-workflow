@@ -42,7 +42,7 @@ jobs:
           EXISTING_PR=$(gh pr list --base dev --label "auto-sync" --state open --json number --jq '.[0].number // empty')
           echo "existing_pr=$EXISTING_PR" >> $GITHUB_OUTPUT
         env:
-          SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
+          GH_TOKEN: ${{ secrets.SYNC_TOKEN }}
 
       - name: Create sync branch and PR
         if: steps.check.outputs.needs_sync == 'true' && steps.existing-pr.outputs.existing_pr == ''
@@ -123,4 +123,4 @@ jobs:
               --label "auto-sync,conflicts,needs-attention"
           fi
         env:
-          SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
+          GH_TOKEN: ${{ secrets.SYNC_TOKEN }}
