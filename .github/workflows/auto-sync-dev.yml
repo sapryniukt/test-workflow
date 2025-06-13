@@ -1,4 +1,4 @@
-name: Smart Dev Sync
+name: Auto Sync Dev
 
 on:
   push:
