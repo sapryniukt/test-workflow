@@ -118,7 +118,7 @@ jobs:
               git merge origin/master --no-edit
               git push origin $PR_BRANCH
               
-              # Update PR description
+              # Update PR description for successful merge
               gh pr edit $PR_NUMBER \
                 --title "🔄 Auto-sync: Master → Dev (${{ steps.check.outputs.behind_count }} commits) [Updated]" \
                 --body "$(cat << EOF
@@ -145,23 +145,32 @@ jobs:
               gh pr comment $PR_NUMBER --body "🔄 **PR automatically updated** with $CURRENT_BEHIND new commits from master. Ready for review!"
               
             else
-              # Merge conflicts detected - update PR with conflict info
+              # Merge conflicts detected - update PR title, description AND labels
               gh pr edit $PR_NUMBER \
                 --title "⚠️ Sync PR Needs Manual Update: Master → Dev (Conflicts)" \
-                --add-label "conflicts,needs-attention"
-              
-              gh pr comment $PR_NUMBER --body "$(cat << EOF
-          ⚠️ **Merge conflicts detected** while updating this PR with new master commits.
+                --add-label "conflicts,needs-attention" \
+                --body "$(cat << EOF
+          ## Manual Sync Required - Merge Conflicts Detected [UPDATED]
+
+          **Automatic merge failed** while updating this PR with new master commits.
+
+          ### Summary
+          - **${{ steps.check.outputs.behind_count }}** commits behind master
+          - **${{ steps.check.outputs.ahead_count }}** commits ahead of master
+          - **Merge conflicts detected** ❌
 
           ### Conflicted Files
           \`\`\`
           ${{ steps.test-merge.outputs.conflicted_files }}
           \`\`\`
 
-          ### Manual Update Required
+          ### Recent Master Commits (causing conflicts)
+          $(git log origin/dev..origin/master --oneline --max-count=10)
+
+          ### Manual Resolution Steps
           1. Checkout this branch locally
-          2. Merge master and resolve conflicts  
-          3. Push the resolved changes
+          2. Merge master and resolve conflicts
+          3. Push the resolved merge
 
           \`\`\`bash
           git fetch origin
@@ -169,11 +178,21 @@ jobs:
           git merge origin/master
           # Resolve conflicts in your editor
           git add .
-          git commit
+          git commit -m "Resolve merge conflicts for master → dev sync"
           git push origin $PR_BRANCH
           \`\`\`
+
+          ### After Resolution
+          - [ ] Conflicts resolved and tested
+          - [ ] Changes reviewed  
+          - [ ] Ready to merge
+
+          *Auto-updated on $(date)*
           EOF
           )"
+              
+              # Also add comment about the conflict detection
+              gh pr comment $PR_NUMBER --body "⚠️ **Merge conflicts detected** while updating this PR with new master commits. The PR description has been updated with resolution instructions."
             fi
           else
             echo "✅ Existing PR is already up to date"
@@ -250,7 +269,7 @@ jobs:
 
           ### Summary
           - **${{ steps.check.outputs.behind_count }}** commits behind master
-          - **Merge conflicts detected in files below**
+          - **Merge conflicts detected in files below** ❌
 
           ### Conflicted Files
           \`\`\`
