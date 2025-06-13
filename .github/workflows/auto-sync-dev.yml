@@ -117,13 +117,13 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.SYNC_TOKEN }}
 
-      - name: Update existing sync PR (master updates)
-        if: steps.check.outputs.needs_sync == 'true' && steps.existing-pr.outputs.has_existing_pr == 'true' && steps.check.outputs.triggered_by == 'master'
+      - name: Update existing sync PR (master or dev updates)
+        if: steps.check.outputs.needs_sync == 'true' && steps.existing-pr.outputs.has_existing_pr == 'true'
         run: |
           PR_BRANCH="${{ steps.existing-pr.outputs.existing_pr_branch }}"
           PR_NUMBER="${{ steps.existing-pr.outputs.existing_pr_number }}"
 
-          echo "🔄 Updating existing sync PR #$PR_NUMBER on branch $PR_BRANCH (triggered by master update)"
+          echo "🔄 Updating existing sync PR #$PR_NUMBER on branch $PR_BRANCH (triggered by ${{ steps.check.outputs.triggered_by }} update)"
 
           # Checkout existing sync branch
           git fetch origin $PR_BRANCH
@@ -231,7 +231,7 @@ jobs:
           )"
 
             # Add comment about the update
-            gh pr comment $PR_NUMBER --body "🔄 **PR automatically updated** with latest dev and master changes. ✅ **No conflicts detected** - Ready for review!"
+            gh pr comment $PR_NUMBER --body "🔄 **PR automatically updated** with latest dev and master changes (triggered by ${{ steps.check.outputs.triggered_by }} update). ✅ **No conflicts detected** - Ready for review!"
             
           else
             echo "❌ Failed to merge master changes - conflicts detected"
