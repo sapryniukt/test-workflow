@@ -39,9 +39,10 @@ jobs:
         if: steps.check.outputs.needs_sync == 'true'
         id: test-merge
         run: |
+          # Pull latest changes from both branches
           git fetch origin master dev
 
-          # Create temporary branch for testing
+          # Create temporary branch for testing from latest dev
           git checkout -b temp-test-merge origin/dev
 
           # Test merge without committing
@@ -296,16 +297,16 @@ jobs:
       - name: Create new successful sync PR
         if: steps.check.outputs.needs_sync == 'true' && steps.existing-pr.outputs.has_existing_pr == 'false' && steps.test-merge.outputs.merge_possible == 'true'
         run: |
-          # Fetch latest changes
+          # Fetch latest changes from both branches
           git fetch origin master dev
 
           TIMESTAMP=$(date +%Y%m%d-%H%M%S)
           BRANCH="auto-sync/master-to-dev-$TIMESTAMP"
 
-          # Create sync branch from latest dev
+          # Create sync branch from latest dev (not cached dev)
           git checkout -b $BRANCH origin/dev
 
-          # Merge master (we know this will succeed from our test)
+          # Merge latest master (we know this will succeed from our test)
           git merge origin/master --no-edit
 
           # Push the merged branch
@@ -322,6 +323,7 @@ jobs:
           - **${{ steps.check.outputs.ahead_count }}** commits ahead of master
           - **No merge conflicts detected** ✅
           - **Triggered by**: ${{ steps.check.outputs.triggered_by }} branch update
+          - **Based on latest dev branch** 🔄
 
           ### Recent Master Commits
           $(git log origin/dev..origin/master --oneline --max-count=10)
@@ -342,13 +344,13 @@ jobs:
       - name: Create conflict notification PR
         if: steps.check.outputs.needs_sync == 'true' && steps.existing-pr.outputs.has_existing_pr == 'false' && steps.test-merge.outputs.merge_possible == 'false'
         run: |
-          # Fetch latest changes
+          # Fetch latest changes from both branches
           git fetch origin master dev
 
           TIMESTAMP=$(date +%Y%m%d-%H%M%S)
           BRANCH="sync-conflict/master-to-dev-$TIMESTAMP"
 
-          # Create branch from dev (clean, no conflicts)
+          # Create branch from latest dev (not cached dev)
           git checkout -b $BRANCH origin/dev
           git push origin $BRANCH
 
@@ -364,6 +366,7 @@ jobs:
           - **${{ steps.check.outputs.behind_count }}** commits behind master
           - **Merge conflicts detected in files below** ❌
           - **Triggered by**: ${{ steps.check.outputs.triggered_by }} branch update
+          - **Based on latest dev branch** 🔄
 
           ### Conflicted Files
           \`\`\`
